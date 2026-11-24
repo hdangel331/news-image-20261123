@@ -91,6 +91,22 @@ def wrap(draw, text, fname, size, max_width, max_lines):
     return font(fname, 10), lines[:max_lines]
 
 
+def crop_to_aspect(img, target_w, target_h, bias=0.5):
+    """Center-crop img to the target aspect ratio (no stretching).
+
+    bias picks the vertical band: 0 keeps the top, 0.5 the middle, 1 the bottom.
+    """
+    w, h = img.size
+    target_ratio = target_w / target_h
+    if w / h > target_ratio:
+        new_w = int(h * target_ratio)
+        x0 = (w - new_w) // 2
+        return img.crop((x0, 0, x0 + new_w, h))
+    new_h = int(w / target_ratio)
+    y0 = int((h - new_h) * bias)
+    return img.crop((0, y0, w, y0 + new_h))
+
+
 def main():
     if not PANELS.exists():
         print(f"missing {PANELS} — put the six-panel illustration there first", file=sys.stderr)
@@ -99,15 +115,23 @@ def main():
     side = min(grid.size)
     grid = grid.crop(((grid.width - side) // 2, (grid.height - side) // 2,
                       (grid.width + side) // 2, (grid.height + side) // 2))
-    # The grid is 2 rows x 3 columns inside the square image, so each cell
-    # is a portrait rectangle: width side/3, height side/2.
-    cell_w, cell_h = side // 3, side // 2
+    # Find the grid itself: the panels sit on a white page, so the bounding
+    # box of non-white pixels is the outer edge of the 2x3 grid.
+    grey = grid.convert("L")
+    mask = grey.point(lambda p: 255 if p < 240 else 0)
+    bbox = mask.getbbox()
+    if bbox is None:
+        raise SystemExit("panels.png looks blank")
+    gx0, gy0, gx1, gy1 = bbox
+    gw, gh = gx1 - gx0, gy1 - gy0
+    # 2 rows x 3 columns; each cell is a portrait rectangle.
+    cell_w, cell_h = gw // 3, gh // 2
     inset_x, inset_y = max(4, cell_w // 40), max(4, cell_h // 40)
     cells = []
     for row in range(2):
         for col in range(3):
-            box = (col * cell_w + inset_x, row * cell_h + inset_y,
-                   (col + 1) * cell_w - inset_x, (row + 1) * cell_h - inset_y)
+            box = (gx0 + col * cell_w + inset_x, gy0 + row * cell_h + inset_y,
+                   gx0 + (col + 1) * cell_w - inset_x, gy0 + (row + 1) * cell_h - inset_y)
             cells.append(grid.crop(box))
 
     poster = Image.new("RGB", (W, H), PAPER)
@@ -130,13 +154,16 @@ def main():
     margin, gutter = 24, 16
     panel_w = (W - 2 * margin - 2 * gutter) // 3
     panel_h = (grid_bottom - grid_top - gutter) // 2
-    img_w, img_h = panel_w - 20, 150
+    img_w, img_h = panel_w - 20, 170
+    # Vertical crop bias per panel: the cracked globe in panel 1 sits at the
+    # top of its cell, so keep the upper band there; the rest read best centred.
+    crop_bias = [0.2, 0.5, 0.5, 0.5, 0.5, 0.5]
     for i, (kicker, headline, summary) in enumerate(STORIES):
         row, col = divmod(i, 3)
         x = margin + col * (panel_w + gutter)
         y = grid_top + row * (panel_h + gutter)
         d.rectangle([x, y, x + panel_w, y + panel_h], fill=CARD, outline=BORDER, width=1)
-        art = cells[i].resize((img_w, img_h), Image.LANCZOS)
+        art = crop_to_aspect(cells[i], img_w, img_h, bias=crop_bias[i]).resize((img_w, img_h), Image.LANCZOS)
         poster.paste(art, (x + 10, y + 10))
         tx = x + 10
         ty = y + 10 + img_h + 10
@@ -147,7 +174,7 @@ def main():
         for line in lines:
             d.text((tx, hy), line, font=f, fill=INK)
             hy += 28
-        f, lines = wrap(d, summary, SANS, 18, panel_w - 20, 3)
+        f, lines = wrap(d, summary, SANS, 18, panel_w - 20, 2)
         sy = hy + 6
         for line in lines:
             d.text((tx, sy), line, font=f, fill=(60, 60, 60))
